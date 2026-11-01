@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net9.0</TargetFramework>
+        <ImplicitUsings>true</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <NoWarn>$(NoWarn);MSB3270</NoWarn>
+        <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+        <Sts2Path Condition="'$(Sts2Path)' == ''">C:/Program Files (x86)/Steam/steamapps/common/Slay the Spire 2</Sts2Path>
+        <Sts2DataDir>$(Sts2Path)/data_sts2_windows_x86_64</Sts2DataDir>
+        <ModsPath>$(Sts2Path)/mods/</ModsPath>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Reference Include="sts2"><HintPath>$(Sts2DataDir)/sts2.dll</HintPath><Private>false</Private></Reference>
+        <Reference Include="GodotSharp"><HintPath>$(Sts2DataDir)/GodotSharp.dll</HintPath><Private>false</Private></Reference>
+        <Reference Include="0Harmony"><HintPath>$(Sts2DataDir)/0Harmony.dll</HintPath><Private>false</Private></Reference>
+    </ItemGroup>
+
+    <Target Name="CopyToModsFolder" AfterTargets="Build">
+        <Copy SourceFiles="$(TargetPath);$(MSBuildProjectName).json" DestinationFolder="$(ModsPath)$(MSBuildProjectName)/" />
+    </Target>
+</Project>
