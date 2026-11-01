@@ -112,7 +112,6 @@ public struct NetListCardAction : INetAction
 {
     public NetDeckCard card;
     public ModelId cardId;
-    public int startPrice;
 
     public GameAction ToGameAction(Player player)
     {
@@ -122,7 +121,7 @@ public struct NetListCardAction : INetAction
             // The id check rejects a request whose deck index no longer points at the chosen card.
             if (self.card.DeckIndex < player.Deck.Cards.Count && self.card.ToCardModel(player) is { } model && model.Id.Equals(self.cardId))
             {
-                Trade.ListCard(player, model, self.startPrice);
+                Trade.ListCard(player, model);
             }
         });
     }
@@ -131,14 +130,12 @@ public struct NetListCardAction : INetAction
     {
         writer.Write(card);
         writer.WriteFullModelId(cardId);
-        writer.WriteInt(startPrice);
     }
 
     public void Deserialize(PacketReader reader)
     {
         card = reader.Read<NetDeckCard>();
         cardId = reader.ReadFullModelId();
-        startPrice = reader.ReadInt();
     }
 }
 

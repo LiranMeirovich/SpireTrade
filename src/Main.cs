@@ -4,6 +4,7 @@ using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Merchant;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions;
+using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Rooms;
@@ -31,6 +32,21 @@ internal static class InstallUiPatch
     {
         Trade.Reset();
         TradeUi.Install(__instance);
+    }
+}
+
+// The deck picker only takes a localized prompt, and a code-only mod ships no localization tables.
+[HarmonyPatch(typeof(LocString), nameof(LocString.GetFormattedText))]
+internal static class SellPromptPatch
+{
+    private static bool Prefix(LocString __instance, ref string __result)
+    {
+        if (__instance.LocTable != TradeUi.PromptTable)
+        {
+            return true;
+        }
+        __result = TradeUi.SellPrompt;
+        return false;
     }
 }
 

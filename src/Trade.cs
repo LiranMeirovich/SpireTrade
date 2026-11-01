@@ -12,7 +12,7 @@ public sealed class Auction
 {
     public required uint Id { get; init; }
     public required Player Seller { get; init; }
-    public required SerializableCard Card { get; init; }
+    public required CardModel Card { get; init; }
     public required string Title { get; init; }
     public int Price { get; set; }
     public Player? HighBidder { get; set; }
@@ -103,36 +103,43 @@ public static class Trade
         AddLog($"{NameOf(from)} gave {title} to {NameOf(to)}");
     }
 
-    public static void ListCard(Player seller, CardModel card, int startPrice)
+    public static void ListCard(Player seller, CardModel card)
     {
-        if (startPrice < 0 || !card.IsRemovable || !IsAtMerchant(seller))
+        if (!card.IsRemovable || !IsAtMerchant(seller))
         {
             return;
         }
         // The card and every bid are held in escrow, so nothing can be spent or removed twice.
+        // Out of any pile, the card still renders like the merchant's own unbought stock.
+        card.RemoveFromCurrentPile();
         var auction = new Auction
         {
             Id = _nextAuctionId++,
             Seller = seller,
-            Card = card.ToSerializable(),
+            Card = card,
             Title = card.Title,
-            Price = startPrice,
             ExpiresAtMsec = Time.GetTicksMsec() + AuctionMsec
         };
-        card.RemoveFromState();
         _auctions.Add(auction);
-        AddLog($"{NameOf(seller)} listed {auction.Title} from {startPrice} gold");
+        AddLog($"{NameOf(seller)} put {auction.Title} up for auction");
+    }
+
+    public static int MinimumBid(Auction auction) => auction.HighBidder == null ? 0 : auction.Price + 1;
+
+    // A player raising their own bid also has their current bid to spend.
+    public static int MaximumBid(Auction auction, Player bidder)
+    {
+        return bidder.Gold + (auction.HighBidder == bidder ? auction.Price : 0);
     }
 
     public static void Bid(Player bidder, uint auctionId, int amount)
     {
         Auction? auction = Find(auctionId);
-        if (auction == null || auction.Seller == bidder || auction.HighBidder == bidder)
+        if (auction == null || auction.Seller == bidder)
         {
             return;
         }
-        int minimum = auction.HighBidder == null ? auction.Price : auction.Price + 1;
-        if (amount < minimum || bidder.Gold < amount)
+        if (amount < MinimumBid(auction) || amount > MaximumBid(auction, bidder))
         {
             return;
         }
@@ -167,15 +174,18 @@ public static class Trade
     private static void SettleAuction(Auction auction)
     {
         _auctions.Remove(auction);
-        Player owner = auction.HighBidder ?? auction.Seller;
-        owner.Deck.AddInternal(owner.RunState.LoadCard(auction.Card, owner));
-        if (auction.HighBidder == null)
+        if (auction.HighBidder is not { } winner)
         {
+            auction.Seller.Deck.AddInternal(auction.Card);
             AddLog($"No bids: {auction.Title} returned to {NameOf(auction.Seller)}");
             return;
         }
+        // A card's owner is fixed, so the winner receives a full copy with its upgrades and enchantments.
+        SerializableCard saved = auction.Card.ToSerializable();
+        auction.Card.RemoveFromState();
+        winner.Deck.AddInternal(winner.RunState.LoadCard(saved, winner));
         auction.Seller.Gold += auction.Price;
-        AddLog($"{NameOf(owner)} won {auction.Title} for {auction.Price} gold");
+        AddLog($"{NameOf(winner)} won {auction.Title} for {auction.Price} gold");
     }
 
     public static void DistributeFallenPlayers(IReadOnlyList<Player> players)
