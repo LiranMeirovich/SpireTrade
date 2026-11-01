@@ -1,5 +1,4 @@
 using Godot;
-using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.ControllerInput;
@@ -15,26 +14,43 @@ using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Nodes.Rooms;
+using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
-using MegaCrit.Sts2.Core.Nodes.Screens.Capstones;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
+using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
+using MegaCrit.Sts2.Core.Nodes.Screens.Shops;
+using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 
 namespace SpireTrade;
 
 /// <summary>
-/// The trade screen. Built in code from Godot controls and the game's own fonts, cards and deck
-/// picker, so the mod needs no .pck file. Godot controls only react to the raw ui_accept action,
-/// so confirming with a controller and moving focus between buttons are both wired up here.
+/// The trade windows and the buttons that open them. Built in code from Godot controls and the
+/// game's own fonts, cards and deck picker, so the mod needs no .pck file. Godot controls only
+/// react to the raw ui_accept action, so confirming with a controller and moving focus between
+/// buttons are both wired up here.
 /// </summary>
 public static class TradeUi
 {
     public const string PromptTable = "spire_trade";
     public const string SellPrompt = "Choose a card to put up for auction";
 
+    private enum TradeWindow
+    {
+        Auctions,
+        GiveGold,
+        GivePotions
+    }
+
     private const float CardScale = 0.55f;
     private const string FontPath = "res://themes/kreon_bold_shared.tres";
     private const string GoldIconPath = "res://images/atlases/ui_atlas.sprites/top_bar/top_bar_gold.tres";
+
+    // Where the shop buttons sit on screen once the shop's slots have finished sliding into place.
+    private const float ShopSlotsRestingY = 80f;
+    private static readonly Vector2 ShopButtonsPosition = new(1395, 925);
+    private static readonly Vector2 ShopButtonSize = new(190, 44);
 
     private static readonly Color Gold = new(0.96f, 0.80f, 0.33f);
     private static readonly Color Cream = new(1f, 0.96f, 0.88f);
@@ -59,27 +75,115 @@ public static class TradeUi
     private static bool _dirty;
     private static ulong _lastActivationFrame;
     private static CanvasLayer? _layer;
-    private static Button _openButton = null!;
+    private static Theme _theme = null!;
     private static Control _screen = null!;
+    private static PanelContainer _panel = null!;
     private static VBoxContainer _content = null!;
+    private static Label _auctionNotice = null!;
+    private static NMerchantInventory? _inventory;
+    private static Button? _auctionsButton;
+    private static Button? _giveGoldButton;
+    private static NRewardsScreen? _rewardsScreen;
+    private static Button? _potionsButton;
+    private static Button? _returnFocus;
+    private static TradeWindow _window;
     private static string _signature = "";
     private static ulong _targetId;
     private static int _giveAmount = 10;
 
+    private static bool IsMultiplayer => !RunManager.Instance.IsSingleplayerOrFakeMultiplayer;
+
     public static void Install(NRun run)
     {
-        if (RunManager.Instance.IsSingleplayerOrFakeMultiplayer)
+        if (!IsMultiplayer)
         {
             return;
         }
         Build(run);
-        NHotkeyManager.Instance?.PushHotkeyPressedBinding(MegaInput.peek, Toggle);
-        _layer!.TreeExiting += () => NHotkeyManager.Instance?.RemoveHotkeyPressedBinding(MegaInput.peek, Toggle);
+        NHotkeyManager.Instance?.PushHotkeyPressedBinding(MegaInput.peek, OnTradeHotkey);
+        _layer!.TreeExiting += () => NHotkeyManager.Instance?.RemoveHotkeyPressedBinding(MegaInput.peek, OnTradeHotkey);
         if (!_tickConnected && Engine.GetMainLoop() is SceneTree tree)
         {
             tree.ProcessFrame += Tick;
             _tickConnected = true;
         }
+    }
+
+    /// <summary>
+    /// Adds the shop's two buttons on first call. The shop rebuilds its controller navigation after
+    /// every purchase, so the links from the card removal slot are restored on each call.
+    /// </summary>
+    public static void AttachToShop(NMerchantInventory inventory)
+    {
+        if (!IsMultiplayer || inventory.GetType() != typeof(NMerchantInventory))
+        {
+            return;
+        }
+        if (inventory.GetNodeOrNull<Control>("%MerchantCardRemoval") is not { } removal
+            || inventory.GetNodeOrNull<Control>("%SlotsContainer") is not { } slots)
+        {
+            return;
+        }
+        if (_inventory != inventory || _auctionsButton == null || !GodotObject.IsInstanceValid(_auctionsButton))
+        {
+            _inventory = inventory;
+            _auctionsButton = MakeScreenButton("Trade cards", () => Open(TradeWindow.Auctions));
+            _giveGoldButton = MakeScreenButton("Give gold", () => Open(TradeWindow.GiveGold));
+            // The slots slide in from off screen, so position relative to where they come to rest.
+            var position = new Vector2(ShopButtonsPosition.X - slots.GlobalPosition.X, ShopButtonsPosition.Y - ShopSlotsRestingY);
+            PlaceShopButton(slots, _auctionsButton, position);
+            PlaceShopButton(slots, _giveGoldButton, position + new Vector2(0, ShopButtonSize.Y + 6));
+        }
+
+        Button auctions = _auctionsButton;
+        Button giveGold = _giveGoldButton!;
+        NodePath removalPath = removal.GetPath();
+        removal.FocusNeighborBottom = auctions.GetPath();
+        auctions.FocusNeighborTop = removalPath;
+        auctions.FocusNeighborBottom = giveGold.GetPath();
+        auctions.FocusNeighborLeft = removal.FocusNeighborLeft;
+        auctions.FocusNeighborRight = auctions.GetPath();
+        giveGold.FocusNeighborTop = auctions.GetPath();
+        giveGold.FocusNeighborBottom = giveGold.GetPath();
+        giveGold.FocusNeighborLeft = removal.FocusNeighborLeft;
+        giveGold.FocusNeighborRight = giveGold.GetPath();
+    }
+
+    /// <summary>
+    /// Adds the potion button to the rewards shown after a fight. It stays out of the rewards
+    /// list's focus order, since that list scrolls to follow focus; controllers use the hotkey.
+    /// </summary>
+    public static void AttachToRewards(NRewardsScreen screen)
+    {
+        if (!IsMultiplayer || RunManager.Instance.DebugOnlyGetState()?.CurrentRoom is not CombatRoom)
+        {
+            return;
+        }
+        _rewardsScreen = screen;
+        _potionsButton = MakeScreenButton("Give a potion", () => Open(TradeWindow.GivePotions));
+        _potionsButton.FocusMode = Control.FocusModeEnum.None;
+        _potionsButton.SetAnchorsPreset(Control.LayoutPreset.CenterBottom);
+        _potionsButton.OffsetLeft = -130;
+        _potionsButton.OffsetRight = 130;
+        _potionsButton.OffsetTop = -112;
+        _potionsButton.OffsetBottom = -60;
+        screen.AddChild(_potionsButton);
+    }
+
+    private static void PlaceShopButton(Control parent, Button button, Vector2 position)
+    {
+        parent.AddChild(button);
+        button.Position = position;
+        button.Size = ShopButtonSize;
+        button.CustomMinimumSize = ShopButtonSize;
+    }
+
+    private static Button MakeScreenButton(string text, Action action)
+    {
+        Button button = MakeButton(text, text, action);
+        button.Theme = _theme;
+        button.AddThemeStyleboxOverride("normal", Box(ButtonColor, Gold, 2, 8, 6));
+        return button;
     }
 
     private static void Build(NRun run)
@@ -93,18 +197,17 @@ public static class TradeUi
 
         _layer = new CanvasLayer { Layer = 100 };
         run.AddChild(_layer);
-        Theme theme = BuildTheme();
+        _theme = BuildTheme();
 
-        _openButton = new Button { Text = "Trade", Theme = theme, FocusMode = Control.FocusModeEnum.None };
-        _openButton.SetAnchorsPreset(Control.LayoutPreset.TopRight);
-        _openButton.OffsetLeft = -360;
-        _openButton.OffsetRight = -255;
-        _openButton.OffsetTop = 10;
-        _openButton.OffsetBottom = 58;
-        _openButton.Pressed += Toggle;
-        _layer.AddChild(_openButton);
+        _auctionNotice = new Label { Theme = _theme, Visible = false, HorizontalAlignment = HorizontalAlignment.Center, MouseFilter = Control.MouseFilterEnum.Ignore };
+        _auctionNotice.SetAnchorsPreset(Control.LayoutPreset.CenterTop);
+        _auctionNotice.OffsetLeft = -500;
+        _auctionNotice.OffsetRight = 500;
+        _auctionNotice.OffsetTop = 84;
+        _auctionNotice.AddThemeColorOverride("font_color", Gold);
+        _layer.AddChild(_auctionNotice);
 
-        _screen = new ColorRect { Color = new Color(0, 0, 0, 0.65f), Visible = false, Theme = theme };
+        _screen = new ColorRect { Color = new Color(0, 0, 0, 0.65f), Visible = false, Theme = _theme };
         _screen.SetAnchorsPreset(Control.LayoutPreset.FullRect);
         _layer.AddChild(_screen);
 
@@ -112,13 +215,13 @@ public static class TradeUi
         center.SetAnchorsPreset(Control.LayoutPreset.FullRect);
         _screen.AddChild(center);
 
-        var panel = new PanelContainer { CustomMinimumSize = new Vector2(1240, 900) };
-        panel.AddThemeStyleboxOverride("panel", Box(PanelColor, BorderColor, 4, 14, 20));
-        center.AddChild(panel);
+        _panel = new PanelContainer();
+        _panel.AddThemeStyleboxOverride("panel", Box(PanelColor, BorderColor, 4, 14, 20));
+        center.AddChild(_panel);
 
         // FollowFocus keeps the selected button on screen while navigating with a controller.
         var scroll = new ScrollContainer { HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled, FollowFocus = true };
-        panel.AddChild(scroll);
+        _panel.AddChild(scroll);
         _content = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
         _content.AddThemeConstantOverride("separation", 12);
         scroll.AddChild(_content);
@@ -171,10 +274,17 @@ public static class TradeUi
                 return;
             }
             RequestExpiredSettlements(me);
-            RefreshOpenButton();
+            RefreshScreenButtons(me);
             if (_isOpen)
             {
-                Refresh(me);
+                if (IsWindowAvailable(_window))
+                {
+                    Refresh(me);
+                }
+                else
+                {
+                    Close();
+                }
             }
         }
         catch (Exception e)
@@ -199,35 +309,80 @@ public static class TradeUi
         }
     }
 
-    private static void RefreshOpenButton()
+    private static void RefreshScreenButtons(Player me)
     {
-        _openButton.Visible = !_isOpen && !_pickingCard && NCapstoneContainer.Instance?.CurrentCapstoneScreen == null;
+        int count = Trade.Auctions.Count;
+        Auction? first = Trade.Auctions.FirstOrDefault();
+        _auctionNotice.Visible = first != null && !_isOpen && !_pickingCard;
+        if (first != null)
+        {
+            string others = count > 1 ? $" (+{count - 1} more)" : "";
+            string bid = first.HighBidder == null ? "no bids yet" : $"top bid {first.Price}";
+            _auctionNotice.Text = $"Auction: {first.Title}, {bid}{others}";
+        }
+
         NControllerManager? controller = NControllerManager.Instance;
-        _openButton.Icon = controller is { ShouldShowInputGlyphs: true } ? controller.GetHotkeyIcon(MegaInput.peek) : null;
-        _openButton.ExpandIcon = true;
+        Texture2D? glyph = controller is { ShouldShowInputGlyphs: true } ? controller.GetHotkeyIcon(MegaInput.peek) : null;
+        if (IsValid(_auctionsButton))
+        {
+            _auctionsButton!.Text = count > 0 ? $"Trade cards ({count})" : "Trade cards";
+            SetGlyph(_auctionsButton, glyph);
+        }
+        if (IsValid(_potionsButton))
+        {
+            SetGlyph(_potionsButton!, glyph);
+        }
     }
 
-    private static void Toggle()
+    private static void SetGlyph(Button button, Texture2D? glyph)
     {
-        if (_pickingCard)
+        button.Icon = glyph;
+        button.ExpandIcon = true;
+    }
+
+    private static bool IsValid(GodotObject? node) => node != null && GodotObject.IsInstanceValid(node);
+
+    private static bool IsWindowAvailable(TradeWindow window)
+    {
+        if (window == TradeWindow.GivePotions)
         {
-            return;
+            return IsValid(_rewardsScreen);
         }
+        return NMerchantRoom.Instance?.Inventory is { IsOpen: true };
+    }
+
+    private static void OnTradeHotkey()
+    {
         if (_isOpen)
         {
             Close();
         }
-        else if (_openButton.Visible)
+        else if (_pickingCard)
         {
-            Open();
+            return;
+        }
+        else if (IsValid(_rewardsScreen) && ActiveScreenContext.Instance.IsCurrent(_rewardsScreen!))
+        {
+            Open(TradeWindow.GivePotions);
+        }
+        else if (NMerchantRoom.Instance?.Inventory is { IsOpen: true } inventory && ActiveScreenContext.Instance.IsCurrent(inventory))
+        {
+            Open(TradeWindow.Auctions);
         }
     }
 
-    private static void Open()
+    private static void Open(TradeWindow window)
     {
+        if (_isOpen)
+        {
+            return;
+        }
+        _returnFocus = _screen.GetViewport()?.GuiGetFocusOwner() as Button;
+        _window = window;
         _isOpen = true;
         _screen.Visible = true;
         _signature = "";
+        _panel.CustomMinimumSize = window == TradeWindow.Auctions ? new Vector2(980, 880) : new Vector2(660, 560);
         // Blocks the game's hotkeys while open. Our bindings go on top, so they still fire.
         NHotkeyManager? hotkeys = NHotkeyManager.Instance;
         hotkeys?.AddBlockingScreen(_layer!);
@@ -250,6 +405,10 @@ public static class TradeUi
         hotkeys?.RemoveHotkeyPressedBinding(MegaInput.peek, Close);
         hotkeys?.RemoveBlockingScreen(_layer!);
         _screen.GetViewport()?.GuiReleaseFocus();
+        if (NControllerManager.Instance is { ShouldShowInputGlyphs: true } && IsValid(_returnFocus))
+        {
+            _returnFocus!.GrabFocus();
+        }
     }
 
     private static void Refresh(Player me)
@@ -278,10 +437,8 @@ public static class TradeUi
         string potions = string.Join(",", me.PotionSlots.Select(p => p?.Id.ToString() ?? "-"));
         string others = string.Join(",", me.RunState.Players.Select(p => $"{p.NetId}:{p.HasOpenPotionSlots}"));
         string auctions = string.Join(",", Trade.Auctions.Select(a => $"{a.Id}:{a.Price}:{a.HighBidder?.NetId}"));
-        return $"{potions}|{others}|{auctions}|{me.Gold}|{IsTradingOpen(me)}|{string.Join(",", Trade.Log)}";
+        return $"{_window}|{potions}|{others}|{auctions}|{me.Gold}|{string.Join(",", Trade.Log)}";
     }
-
-    private static bool IsTradingOpen(Player me) => Trade.IsAtMerchant(me) && !CombatManager.Instance.IsInProgress;
 
     private static void KeepControllerFocus()
     {
@@ -292,7 +449,9 @@ public static class TradeUi
         Control? owner = _screen.GetViewport()?.GuiGetFocusOwner();
         if (owner == null || !_screen.IsAncestorOf(owner))
         {
-            _focusRows.FirstOrDefault()?.FirstOrDefault()?.GrabFocus();
+            // The first row is the Close button, so start on the window's first real choice.
+            List<Button>? start = _focusRows.Skip(1).FirstOrDefault() ?? _focusRows.FirstOrDefault();
+            start?.FirstOrDefault()?.GrabFocus();
         }
     }
 
@@ -321,27 +480,22 @@ public static class TradeUi
             _targetId = others[0].NetId;
         }
 
-        BuildHeader(me);
-        var columns = new HBoxContainer();
-        columns.AddThemeConstantOverride("separation", 28);
-        _content.AddChild(columns);
-        var left = new VBoxContainer { CustomMinimumSize = new Vector2(500, 0) };
-        left.AddThemeConstantOverride("separation", 12);
-        columns.AddChild(left);
-
-        BuildTargets(left, me, others);
-        BuildPotions(left, me);
-        if (IsTradingOpen(me))
+        switch (_window)
         {
-            BuildGiveGold(left, me);
-            var right = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
-            right.AddThemeConstantOverride("separation", 12);
-            columns.AddChild(right);
-            BuildAuctions(right, me);
-        }
-        else
-        {
-            left.AddChild(new Label { Text = "Gold and card trades open at the merchant.", Modulate = Muted });
+            case TradeWindow.Auctions:
+                BuildHeader("Trade cards", me);
+                BuildAuctions(_content, me);
+                break;
+            case TradeWindow.GiveGold:
+                BuildHeader("Give gold", me);
+                BuildTargets(_content, others);
+                BuildGiveGold(_content, me);
+                break;
+            case TradeWindow.GivePotions:
+                BuildHeader("Give a potion", me);
+                BuildTargets(_content, others);
+                BuildPotions(_content, me);
+                break;
         }
         BuildLog();
         LinkFocus();
@@ -362,9 +516,9 @@ public static class TradeUi
         }
     }
 
-    private static void BuildHeader(Player me)
+    private static void BuildHeader(string text, Player me)
     {
-        var title = new Label { Text = "Trade", SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        var title = new Label { Text = text, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
         title.AddThemeFontSizeOverride("font_size", 46);
         title.AddThemeColorOverride("font_color", Gold);
         var goldLabel = new Label { Text = me.Gold.ToString() };
@@ -390,7 +544,7 @@ public static class TradeUi
         _focusRows.Add(new List<Button> { close });
     }
 
-    private static void BuildTargets(VBoxContainer parent, Player me, List<Player> others)
+    private static void BuildTargets(VBoxContainer parent, List<Player> others)
     {
         parent.AddChild(Heading("Give to"));
         var row = new HBoxContainer();
@@ -416,27 +570,27 @@ public static class TradeUi
 
     private static void BuildPotions(VBoxContainer parent, Player me)
     {
-        parent.AddChild(Heading("Give a potion"));
+        parent.AddChild(Heading("Your potions"));
         Player? target = me.RunState.GetPlayer(_targetId);
-        var focusRow = new List<Button>();
+        bool any = false;
         for (int i = 0; i < me.PotionSlots.Count; i++)
         {
             if (me.PotionSlots[i] is not { } potion)
             {
                 continue;
             }
+            any = true;
             int slot = i;
             Button button = MakeButton(potion.Title.GetFormattedText(), $"potion{slot}", () => OnGivePotion(me, slot));
             button.Icon = potion.Image;
             button.ExpandIcon = true;
             button.CustomMinimumSize = new Vector2(0, 76);
             button.Alignment = HorizontalAlignment.Left;
-            button.Disabled = potion.IsQueued || target is not { HasOpenPotionSlots: true };
+            button.Disabled = target is not { HasOpenPotionSlots: true };
             parent.AddChild(button);
-            focusRow.Add(button);
             _focusRows.Add(new List<Button> { button });
         }
-        if (focusRow.Count == 0)
+        if (!any)
         {
             parent.AddChild(new Label { Text = "No potions to give.", Modulate = Muted });
         }
@@ -448,10 +602,10 @@ public static class TradeUi
 
     private static void BuildGiveGold(VBoxContainer parent, Player me)
     {
-        parent.AddChild(Heading("Give gold"));
+        parent.AddChild(Heading("Amount"));
         int max = me.Gold;
         _giveAmount = Math.Clamp(_giveAmount, Math.Min(1, max), Math.Max(1, max));
-        HBoxContainer row = Stepper("give", _giveAmount, 1, max, value => _giveAmount = value, out List<Button> focusRow);
+        HBoxContainer row = Stepper("give", _giveAmount, Math.Min(1, max), max, value => _giveAmount = value, out List<Button> focusRow);
         Button give = MakeButton("Give", "giveGold", () => OnGiveGold(me), primary: true);
         give.Disabled = max < 1 || me.RunState.GetPlayer(_targetId) == null;
         row.AddChild(give);
@@ -462,7 +616,6 @@ public static class TradeUi
 
     private static void BuildAuctions(VBoxContainer parent, Player me)
     {
-        parent.AddChild(Heading("Auction house"));
         Button sell = MakeButton("Sell a card", "sell", () => TaskHelper.RunSafely(PickCardToSell(me)), primary: true);
         parent.AddChild(sell);
         _focusRows.Add(new List<Button> { sell });
@@ -683,7 +836,7 @@ public static class TradeUi
         {
             _pickingCard = false;
         }
-        Open();
+        Open(TradeWindow.Auctions);
     }
 
     private static void OnGiveGold(Player me)
@@ -698,8 +851,7 @@ public static class TradeUi
     {
         if (me.RunState.GetPlayer(_targetId) is { HasOpenPotionSlots: true })
         {
-            bool inCombat = CombatManager.Instance.IsInProgress;
-            Send(new NetGivePotionAction { target = _targetId, slot = (uint)slot, inCombat = inCombat }.ToGameAction(me));
+            Send(new NetGivePotionAction { target = _targetId, slot = (uint)slot }.ToGameAction(me));
         }
     }
 

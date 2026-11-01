@@ -19,14 +19,13 @@ public sealed class TradeAction : GameAction
 
     public override ulong OwnerId => _owner.NetId;
 
-    public override GameActionType ActionType { get; }
+    public override GameActionType ActionType => GameActionType.NonCombat;
 
-    public TradeAction(Player owner, INetAction netAction, Action execute, GameActionType actionType = GameActionType.NonCombat)
+    public TradeAction(Player owner, INetAction netAction, Action execute)
     {
         _owner = owner;
         _netAction = netAction;
         _execute = execute;
-        ActionType = actionType;
     }
 
     protected override Task ExecuteAction()
@@ -78,33 +77,29 @@ public struct NetGivePotionAction : INetAction
 {
     public ulong target;
     public uint slot;
-    public bool inCombat;
 
     public GameAction ToGameAction(Player player)
     {
         NetGivePotionAction self = this;
-        GameActionType type = inCombat ? GameActionType.CombatPlayPhaseOnly : GameActionType.NonCombat;
         return new TradeAction(player, self, () =>
         {
             if (player.RunState.GetPlayer(self.target) is { } to)
             {
                 Trade.GivePotion(player, to, (int)self.slot);
             }
-        }, type);
+        });
     }
 
     public void Serialize(PacketWriter writer)
     {
         writer.WriteULong(target);
         writer.WriteUInt(slot, 8);
-        writer.WriteBool(inCombat);
     }
 
     public void Deserialize(PacketReader reader)
     {
         target = reader.ReadULong();
         slot = reader.ReadUInt(8);
-        inCombat = reader.ReadBool();
     }
 }
 

@@ -7,6 +7,8 @@ using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Nodes;
+using MegaCrit.Sts2.Core.Nodes.Screens;
+using MegaCrit.Sts2.Core.Nodes.Screens.Shops;
 using MegaCrit.Sts2.Core.Rooms;
 
 namespace SpireTrade;
@@ -33,6 +35,18 @@ internal static class InstallUiPatch
         Trade.Reset();
         TradeUi.Install(__instance);
     }
+}
+
+[HarmonyPatch(typeof(NMerchantInventory), "UpdateNavigation")]
+internal static class AttachToShopPatch
+{
+    private static void Postfix(NMerchantInventory __instance) => TradeUi.AttachToShop(__instance);
+}
+
+[HarmonyPatch(typeof(NRewardsScreen), nameof(NRewardsScreen._Ready))]
+internal static class AttachToRewardsPatch
+{
+    private static void Postfix(NRewardsScreen __instance) => TradeUi.AttachToRewards(__instance);
 }
 
 // The deck picker only takes a localized prompt, and a code-only mod ships no localization tables.

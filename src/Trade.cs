@@ -94,7 +94,7 @@ public static class Trade
 
     public static void GivePotion(Player from, Player to, int slot)
     {
-        if (from == to || slot >= from.PotionSlots.Count || from.PotionSlots[slot] is not { } potion || !to.HasOpenPotionSlots)
+        if (from == to || from.RunState.CurrentRoom is not CombatRoom || slot >= from.PotionSlots.Count || from.PotionSlots[slot] is not { } potion || !to.HasOpenPotionSlots)
         {
             return;
         }
