@@ -1,0 +1,12 @@
+{
+  "id": "SpireTrade",
+  "name": "Spire Trade",
+  "author": "LiranMeirovich",
+  "description": "Co-op economy: auction cards and give gold at the merchant, give potions anytime, and inherit a fallen teammate's gold and potions.",
+  "version": "v0.1.0",
+  "min_game_version": "0.111.0",
+  "has_pck": false,
+  "has_dll": true,
+  "dependencies": [],
+  "affects_gameplay": true
+}
