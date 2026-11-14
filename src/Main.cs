@@ -6,6 +6,7 @@ using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Modding;
+using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.Shops;
@@ -87,28 +88,16 @@ internal static class CloseAuctionsOnTravelPatch
     private static void Prefix() => Trade.SettleAll();
 }
 
-// Shop purchases apply locally before the host sees them, while trades apply in host order.
+// Shop purchases apply locally before the other peers see them, while trades apply in host order.
 // Holding purchases until our own trade has executed keeps both orders identical across peers.
-[HarmonyPatch(typeof(MerchantEntry), nameof(MerchantEntry.OnTryPurchaseWrapper))]
+// Since v0.113.0 every local shop purchase (cards, relics, potions, card removal) goes through
+// MerchantSynchronizer.PurchaseLocalEntry; purchases received from other peers do not.
+[HarmonyPatch(typeof(MerchantSynchronizer), nameof(MerchantSynchronizer.PurchaseLocalEntry))]
 internal static class HoldPurchasePatch
 {
-    private static bool Prefix(bool ignoreCost, ref Task<bool> __result)
+    private static bool Prefix(ref Task<bool> __result)
     {
-        if (ignoreCost || !Trade.HasPendingLocalTrade)
-        {
-            return true;
-        }
-        __result = Task.FromResult(false);
-        return false;
-    }
-}
-
-[HarmonyPatch(typeof(MerchantCardRemovalEntry), nameof(MerchantCardRemovalEntry.OnTryPurchaseWrapper))]
-internal static class HoldCardRemovalPatch
-{
-    private static bool Prefix(bool ignoreCost, ref Task<bool> __result)
-    {
-        if (ignoreCost || !Trade.HasPendingLocalTrade)
+        if (!Trade.HasPendingLocalTrade)
         {
             return true;
         }
